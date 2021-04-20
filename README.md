@@ -1,0 +1,1 @@
+Script to generate Teal type definitions for the Factorio standard library from the data scraped by https://github.com/spiwn/FactorioApiScraper
