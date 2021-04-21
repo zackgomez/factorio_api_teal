@@ -2,15 +2,21 @@ import * as fs from 'fs'
 import * as path from 'path'
 
 import * as _ from 'lodash';
+import { exception } from 'node:console';
 
 async function go() {
   const data = JSON.parse(await fs.promises.readFile('./context.json', {encoding: 'utf8'}));
 
   console.log(data.classes);
 
-  const classData = data.classes.LuaItemPrototype
-  console.log(classData)
-  console.log(generateClass(classData))
+  const classDefinitions = _.map(data.classes, (c) => {
+    const s = generateClass(c);
+    return s;
+  });
+
+  const classOutput = classDefinitions.join('\n\n');
+
+  fs.promises.writeFile('./classes.d.tl', classOutput);
 }
 
 function invariant_violation(message: string): never {
@@ -40,6 +46,13 @@ type LuaType =
   | {
     type: 'Union',
     value: LuaType[],
+  } 
+  | {
+    type: 'Function'
+  }
+  | {
+    type: 'CustomDictionary'
+    value: [LuaType, LuaType]
   }
 
 type LuaParameter = {
@@ -67,7 +80,39 @@ type LuaAttribute = {
   }
 })
 
+function fixupLuaType(type: LuaType): LuaType {
+  const typeAny = type as any;
+  if (typeAny.type === undefined && typeAny.value && typeAny.value[0] === 'CustomDictionary') {
+    return {
+      type: 'CustomDictionary',
+      value: [
+        typeAny.value[1],
+        typeAny.value[2],
+      ]
+    };
+  } else if (typeAny === 'blueprint entity') {
+    return 'BlueprintEntity';
+  } else if (typeAny === 'blueprint tile') {
+    return 'BlueprintTile';
+  }
+  return type;
+}
+
+const NAMES_TO_FIXUP = [
+  'end',
+  'function',
+]
+function fixupName(name: string): string {
+  if (NAMES_TO_FIXUP.indexOf(name) !== -1) {
+    return name + '_';
+  } else if (name === 'defines.logistic_member_index') {
+    return 'index';
+  }
+  return name;
+}
+
 function generateLuaType(type: LuaType): string {
+  type = fixupLuaType(type)
   if (typeof type === 'string') {
     return type;
   } else if (type.type === 'Array') {
@@ -77,9 +122,16 @@ function generateLuaType(type: LuaType): string {
   } else if (type.type === 'Union') {
     const subtypes = type.value.map(subtype => generateLuaType(subtype));
     return subtypes.join(' | ');
+  } else if (type.type === 'Function') {
+    return 'function(--[[TODO Fill out function params--]])'
+  } else if (type.type === 'CustomDictionary') {
+    return `CustomDictionary<${generateLuaType(type.value[0])}, ${generateLuaType(type.value[1])}>`
   }
 
-  invariant_violation('unknown lua type ' + type);
+  console.warn('unknown lua type ' + JSON.stringify(type));
+  return 'any';
+
+  // invariant_violation('unknown lua type ' + JSON.stringify(type));
 }
 
 function generateRecordAttributes(attributes: {[name:string]: LuaAttribute}, indent: number = 0): string {
@@ -87,13 +139,19 @@ function generateRecordAttributes(attributes: {[name:string]: LuaAttribute}, ind
     switch (attribute.attribute_type) {
       case 'function': {
         const params = _.map(attribute.parameters, param => {
-          return `${param.name}: ${generateLuaType(param.type)}`;
+          return `${fixupName(param.name)}: ${generateLuaType(param.type)}`;
         })
         const paramStr = params.join(', ')
-        return `${attribute.name}: function(${paramStr}): ${generateLuaType(attribute.returnObject.type)}`
+        const returnStr = attribute.returnObject ? `: ${generateLuaType(attribute.returnObject.type)}` : '';
+        return `${attribute.name}: function(${paramStr})${returnStr}`
   
       }
       case 'field': {
+        if (attribute.name === 'operator #') {
+          return '';
+        } else if (attribute.name === 'operator []') {
+          return `{${generateLuaType(attribute.type)}}`
+        }
         return `${attribute.name}: ${generateLuaType(attribute.type)}`
       }
     }
@@ -106,14 +164,21 @@ function generateRecordAttributes(attributes: {[name:string]: LuaAttribute}, ind
 }
 
 function generateClass(classData: LuaClassData): string {
-  return `
+  try {
+    return `
 --[[
   ${classData.desc}
 ]]--
 global record ${classData.name}
 ${generateRecordAttributes(classData.attributes, 2)}
 end
-  `
+`
+  } catch (e) {
+    console.error(classData);
+    console.error('Error generating class', classData.name)
+
+    throw e
+  }
 }
 
 go();
